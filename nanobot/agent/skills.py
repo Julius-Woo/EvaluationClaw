@@ -4,12 +4,75 @@ import json
 import os
 import re
 import shutil
+from importlib.metadata import entry_points
 from pathlib import Path
+from types import ModuleType
 
 import yaml
+from loguru import logger
 
 # Default builtin skills directory (relative to this file)
 BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "skills"
+
+# Entry-point group for third-party skill packages. Each entry-point should
+# resolve to either a ``Path``/``str`` pointing at a directory of skill
+# subdirectories, or a Python module/package whose directory contains them.
+_SKILL_PLUGIN_GROUP = "nanobot.skills"
+_plugin_skill_roots_cache: list[Path] | None = None
+
+
+def _resolve_skill_plugin_root(value: object) -> Path | None:
+    """Coerce an entry-point payload to a skills-root Path, if possible."""
+    if isinstance(value, Path):
+        return value
+    if isinstance(value, str):
+        return Path(value)
+    if isinstance(value, ModuleType):
+        paths = getattr(value, "__path__", None)
+        if paths:
+            return Path(next(iter(paths)))
+        file_attr = getattr(value, "__file__", None)
+        if file_attr:
+            return Path(file_attr).parent
+    return None
+
+
+def discover_plugin_skill_roots() -> list[Path]:
+    """Return skill roots registered via the ``nanobot.skills`` entry-point group.
+
+    Results are cached for the lifetime of the process.
+    """
+    global _plugin_skill_roots_cache
+    if _plugin_skill_roots_cache is not None:
+        return _plugin_skill_roots_cache
+    roots: list[Path] = []
+    try:
+        eps = entry_points(group=_SKILL_PLUGIN_GROUP)
+    except Exception:
+        _plugin_skill_roots_cache = roots
+        return roots
+    for ep in eps:
+        try:
+            value = ep.load()
+        except Exception:
+            logger.exception("Failed to load skills plugin entry-point: %s", ep.name)
+            continue
+        root = _resolve_skill_plugin_root(value)
+        if root is None:
+            logger.warning(
+                "Skills plugin %s resolved to unsupported value %r; skipping",
+                ep.name, value,
+            )
+            continue
+        roots.append(root)
+    _plugin_skill_roots_cache = roots
+    return roots
+
+
+def _reset_plugin_skill_roots_cache() -> None:
+    """Test helper: clear the cached entry-point lookup."""
+    global _plugin_skill_roots_cache
+    _plugin_skill_roots_cache = None
 
 # Opening ---, YAML body (group 1), closing --- on its own line; supports CRLF.
 _STRIP_SKILL_FRONTMATTER = re.compile(
@@ -26,11 +89,23 @@ class SkillsLoader:
     specific tools or perform certain tasks.
     """
 
-    def __init__(self, workspace: Path, builtin_skills_dir: Path | None = None, disabled_skills: set[str] | None = None):
+    def __init__(
+        self,
+        workspace: Path,
+        builtin_skills_dir: Path | None = None,
+        disabled_skills: set[str] | None = None,
+        plugin_skill_roots: list[Path] | None = None,
+    ):
         self.workspace = workspace
         self.workspace_skills = workspace / "skills"
         self.builtin_skills = builtin_skills_dir or BUILTIN_SKILLS_DIR
         self.disabled_skills = disabled_skills or set()
+        # Roots contributed by third-party packages via the ``nanobot.skills``
+        # entry-point group. ``None`` => auto-discover; pass ``[]`` to disable.
+        self.plugin_skill_roots = (
+            list(plugin_skill_roots) if plugin_skill_roots is not None
+            else discover_plugin_skill_roots()
+        )
 
     def _skill_entries_from_dir(self, base: Path, source: str, *, skip_names: set[str] | None = None) -> list[dict[str, str]]:
         if not base.exists():
@@ -59,11 +134,17 @@ class SkillsLoader:
             List of skill info dicts with 'name', 'path', 'source'.
         """
         skills = self._skill_entries_from_dir(self.workspace_skills, "workspace")
-        workspace_names = {entry["name"] for entry in skills}
+        seen_names: set[str] = {entry["name"] for entry in skills}
         if self.builtin_skills and self.builtin_skills.exists():
             skills.extend(
-                self._skill_entries_from_dir(self.builtin_skills, "builtin", skip_names=workspace_names)
+                self._skill_entries_from_dir(self.builtin_skills, "builtin", skip_names=seen_names)
             )
+            seen_names.update(entry["name"] for entry in skills)
+        for plugin_root in self.plugin_skill_roots:
+            skills.extend(
+                self._skill_entries_from_dir(plugin_root, "plugin", skip_names=seen_names)
+            )
+            seen_names.update(entry["name"] for entry in skills)
 
         if self.disabled_skills:
             skills = [s for s in skills if s["name"] not in self.disabled_skills]
@@ -82,9 +163,10 @@ class SkillsLoader:
         Returns:
             Skill content or None if not found.
         """
-        roots = [self.workspace_skills]
+        roots: list[Path] = [self.workspace_skills]
         if self.builtin_skills:
             roots.append(self.builtin_skills)
+        roots.extend(self.plugin_skill_roots)
         for root in roots:
             path = root / name / "SKILL.md"
             if path.exists():

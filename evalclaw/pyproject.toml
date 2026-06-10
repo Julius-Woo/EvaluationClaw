@@ -1,0 +1,65 @@
+[project]
+name = "evalclaw"
+version = "0.1.0"
+description = "EvaluationClaw — automated benchmark construction + execution skills/tools for nanobot"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "the EvalClaw contributors"}]
+keywords = ["llm", "evaluation", "benchmark", "nanobot"]
+
+dependencies = [
+    "nanobot-ai>=0.2.0",
+    "pydantic>=2.12.0,<3.0.0",
+    "pyyaml>=6.0,<7.0.0",
+    "huggingface-hub>=0.27.0,<1.0.0",
+    "datasets>=3.0.0,<4.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.0,<10.0.0",
+    "pytest-asyncio>=1.3.0,<2.0.0",
+    "ruff>=0.1.0",
+]
+
+# Register evalclaw's tools and skills with nanobot's plugin entry-point groups.
+[project.entry-points."nanobot.tools"]
+evalclaw_compile = "evalclaw.tools.compile:CompileTool"
+hf_dataset_search = "evalclaw.tools.hf:HFDatasetSearchTool"
+hf_dataset_sample = "evalclaw.tools.hf:HFDatasetSampleTool"
+
+[project.entry-points."nanobot.skills"]
+# The loader accepts either a Path/str pointing at a directory of skills, or a
+# package whose ``__path__`` contains them. We use the package form.
+evalclaw = "evalclaw.skills"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = [
+    "src/evalclaw/**/*.py",
+    "src/evalclaw/skills/**/*.md",
+    "src/evalclaw/templates/**/*.tmpl",
+    "src/evalclaw/templates/**/*.yaml",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/evalclaw"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src/evalclaw" = "evalclaw"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501"]

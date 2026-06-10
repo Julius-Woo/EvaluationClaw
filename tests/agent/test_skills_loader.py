@@ -7,7 +7,20 @@ from pathlib import Path
 
 import pytest
 
+from nanobot.agent import skills as _skills_module
 from nanobot.agent.skills import SkillsLoader
+
+
+@pytest.fixture(autouse=True)
+def _no_plugin_skill_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate these tests from third-party ``nanobot.skills`` entry-points.
+
+    The plugin discovery itself is exercised in test_skills_loader_plugins.py;
+    these tests assert behavior on an empty skill space and must not pick up
+    plugins installed in the env (e.g. ``evalclaw``).
+    """
+    monkeypatch.setattr(_skills_module, "discover_plugin_skill_roots", lambda: [])
+    _skills_module._reset_plugin_skill_roots_cache()
 
 
 def _write_skill(
